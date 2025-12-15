@@ -12,18 +12,17 @@ from utils import (
 class MSTransform(Transform):
 
     LOCATION = "MS"
-    chunk_dates = []
+    chunk_metadata = []
+    chunk_metadata_idx = 0
 
     @property
     def EXPECTED_FIELDS(self):
         return [
-            "Date",
-            "Time",
+            "Date/Time",
             "Device",
             "Event",
             "Badge",
-            "Name",
-            "Location",
+            "Cardholder Name",
         ]
 
     # ---------------- chunk detection ----------------
@@ -34,30 +33,27 @@ class MSTransform(Transform):
         and resembles a stable header row.
         """
         cells = compact_row(row.tolist())
-        if len(cells) < 4:
+        if len(cells) != 5:
             return False
+        if looks_like_datetime(cells[0]): 
+            cell = self._extract_date_metadata(df, idx)
+            if cell:
+                self.chunk_metadata.append({"date" : cell})
+                return True
+        return False
 
-        normalized = {normalize(c) for c in cells}
 
-        expected = {
-            "datetime",
-            "device",
-            "event",
-            "badge",
-            "cardholdername",
-        }
-
-        return expected.issubset(normalized)
-
-    def is_end_of_chunk(self, row, idx, df):
+    def is_end_of_chunk(self, row, idx, df: pd.DataFrame):
         """
         Chunk ends on empty row or when a new date metadata row appears.
         """
-        if is_row_empty(row):
-            return True
+        if len(compact_row(row)) > 1: 
+            # in the middle of the chunk, don't check for metadata
+            return False
 
-        first_cell = row.iloc[0]
-        return looks_like_datetime(first_cell)
+        cell = df.iloc[idx, 0]
+        if looks_like_datetime(cell):
+            return True
 
     # ---------------- helpers ----------------
 
@@ -67,11 +63,14 @@ class MSTransform(Transform):
         in first column.
         """
         for i in range(start_idx - 1, -1, -1):
+            row = df.iloc[i]
+            if len(compact_row(row)) > 1: 
+                # in the middle of the chunk, don't check for metadata
+                return
+
             cell = df.iloc[i, 0]
             if looks_like_datetime(cell):
-                dt = pd.to_datetime(cell)
-                return dt.date().isoformat()
-        return ""
+                return cell
 
     # ---------------- chunk processing ----------------
 
@@ -80,27 +79,25 @@ class MSTransform(Transform):
         Process one MS chunk into normalized rows
         """
         rows = []
-        current_date = None
+        metadata = self.chunk_metadata[self.chunk_metadata_idx]
+        current_date = metadata['date']
 
         for row in chunk:
             compacted = compact_row(row)
 
             # Expect: Date/Time, Device, Event, Badge, Name
-            if len(compacted) < 5:
+            if len(compacted) < 5 or not compacted:
                 continue
 
-            if not compacted:
-                continue
+            compacted[0] = f"{current_date} {compacted[0]}"
             rows.append(compacted)
-
+        
+        self.chunk_metadata_idx += 1
         return rows
 
     # ---------------- schema conversion ----------------
 
     def convert_schema(self, normalized_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        MS is already normalized at this point.
-        """
         rows = []
 
         for _, row in normalized_df.iterrows():
@@ -118,4 +115,4 @@ class MSTransform(Transform):
                 self.LOCATION,
             ])
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows, columns=["Date" ,"Time" ,"Device" ,"Event" ,"Badge" ,"Name" ,"Location"])
