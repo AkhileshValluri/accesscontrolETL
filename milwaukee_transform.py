@@ -19,7 +19,7 @@ class MilwaukeeTransform(Transform):
     def normalized_expected(self): 
         return {Utils.normalize(f) for f in self.EXPECTED_FIELDS}
 
-    def is_start_of_chunk(self, row):
+    def is_start_of_chunk(self, row, idx, df):
         found = set()
 
         for cell in Utils.compact_row(row):
@@ -30,7 +30,7 @@ class MilwaukeeTransform(Transform):
         return found == self.normalized_expected
 
 
-    def is_end_of_chunk(self, row):
+    def is_end_of_chunk(self, row, idx, df):
         compacted_row = Utils.compact_row(row)
 
         if not compacted_row:

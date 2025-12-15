@@ -18,10 +18,10 @@ class Transform:
     def convert_schema(self, normalized_df: pd.DataFrame) -> pd.DataFrame: 
         raise NotImplementedError("Subclasses should implement this")
 
-    def is_start_of_chunk(self, row):
+    def is_start_of_chunk(self, row, idx, df):
         raise NotImplementedError("Subclasses should implement this")
 
-    def is_end_of_chunk(self, row): 
+    def is_end_of_chunk(self, row, idx, df): 
         raise NotImplementedError("Subclasses should implement this")
 
     def split_into_chunks(self, df):
@@ -31,7 +31,7 @@ class Transform:
 
         for _, row in df.iterrows():
 
-            if self.is_start_of_chunk(row):
+            if self.is_start_of_chunk(row, _, df):
                 if current_chunk:
                     chunks.append(current_chunk)
                     current_chunk = []
@@ -39,7 +39,7 @@ class Transform:
                 continue  # header row is control, not data
 
             if chunk_started:
-                if self.is_end_of_chunk(row):
+                if self.is_end_of_chunk(row, _, df):
                     chunks.append(current_chunk)
                     current_chunk = []
                     chunk_started = False
