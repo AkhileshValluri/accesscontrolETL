@@ -73,21 +73,29 @@ class MilwaukeeTransform(Transform):
 
         return chunks
 
-
+    def find_datetime_idx(self, chunk_rows): 
+        # right most (visually) cell
+        right_most_non_empty_cell = 0
+        for row in chunk_rows:
+            for idx, cell in enumerate(row): 
+                if Utils.is_cell_empty(cell):
+                    continue
+                right_most_non_empty_cell = max(right_most_non_empty_cell, idx)
+        return right_most_non_empty_cell
 
     def concatenate_related_rows(self, chunk_rows):
         results = []
         current = None
 
-        DATE_COL_IDX = self.EXPECTED_FIELDS.index("Message Date/Time")
+        date_col_idx = self.find_datetime_idx(chunk_rows)
 
         for row in chunk_rows:
-            if DATE_COL_IDX >= len(row):
+            if date_col_idx >= len(row):
                 continue
 
-            dt_cell = row[DATE_COL_IDX]
+            dt_cell = row[date_col_idx]
 
-            # start of a new logical row
+            # entry of date is start of new logical row
             if not Utils.is_cell_empty(dt_cell):
                 if current:
                     results.append(current)
@@ -95,17 +103,18 @@ class MilwaukeeTransform(Transform):
                     continue
                 else: 
                     current = row
-
-            for idx, field in enumerate(self.EXPECTED_FIELDS):
-                if field in("Name, Message Date/Time"):
                     continue
-                
-                field = self.EXPECTED_FIELDS.index(field)
-                cell = row[idx]
+            
+            if not current: 
+                continue
+
+            for idx, cell in enumerate(row):
+                if idx == date_col_idx:
+                    break
                 if not Utils.is_cell_empty(cell):
-                    current[field] += (
+                    current[idx] = str(current[idx]) + (
                         " " + str(cell).strip()
-                        if current[field]
+                        if current[idx]
                         else str(cell).strip()
                     )
 
@@ -117,12 +126,22 @@ class MilwaukeeTransform(Transform):
 
     def extract_out_name_data(self, chunk_rows):
         left_most_non_empty_cell = len(chunk_rows[0])
+        number_of_data_points = 0
 
         for row in chunk_rows:
             for idx, cell in enumerate(row):
                 if not Utils.is_cell_empty(cell):
-                    left_most_non_empty_cell = min(left_most_non_empty_cell, idx)
+                    if left_most_non_empty_cell == idx:
+                        number_of_data_points += 1
+                    elif left_most_non_empty_cell > idx:
+                        number_of_data_points= 0
+                        left_most_non_empty_cell = idx
                     break
+
+        # all chunks may not have name entries, don't remove actual left column data
+        if number_of_data_points * 2 > len(chunk_rows):
+            # then the "left most" data is not name 
+            return 
 
         parts = []
         for row in chunk_rows:
@@ -138,22 +157,42 @@ class MilwaukeeTransform(Transform):
                     row[left_most_non_empty_cell + 1:]
                 )
 
-        return " ".join(parts)
+        self.chunk_name = " ".join(parts)
+
+    def extract_id(self, chunk_rows):
+        id_end_delimiter = ')'
+        id_start_delimiter = '('
+        message_text_idx = self.EXPECTED_FIELDS.index("Message Text")
+
+        for row in chunk_rows: 
+            if len(row) <= message_text_idx: 
+                continue
+            message_text:str = str(row[message_text_idx])
+            if Utils.is_cell_empty(message_text):
+                continue
+            id_start_idx = message_text.find(id_start_delimiter)
+            id_end_idx = message_text.find(id_end_delimiter)
+            if id_start_idx == -1 or id_end_idx == -1: 
+                continue
+            return message_text[id_start_idx: id_end_idx + 1]
+        return ""
 
     def process_chunk(self, chunk_rows):
         """
         Convert one chunk into normalized rows
         """
-        # ---- name extraction ----
-        name = self.extract_out_name_data(chunk_rows)
+        chunk_rows = self.concatenate_related_rows(chunk_rows)
 
-        # prepend name and compact
+        self.extract_out_name_data(chunk_rows)
         for i, row in enumerate(chunk_rows):
-            row = Utils.compact_row(row)
-            chunk_rows[i] = [name] + row
-        
-        return self.concatenate_related_rows(chunk_rows)
+            chunk_rows[i] = Utils.compact_row(row)
+            chunk_rows[i] = [self.chunk_name] + chunk_rows[i]
 
+        id = self.extract_id(chunk_rows)
+        for i, row in enumerate(chunk_rows):
+            chunk_rows[i][self.EXPECTED_FIELDS.index("Message Text")] = id
+
+        return chunk_rows
 
     def convert_schema(self, df):
         """
@@ -171,10 +210,9 @@ class MilwaukeeTransform(Transform):
                 "Time": dt.strftime("%H:%M:%S") if not pd.isna(dt) else "",
                 "Device": row.get("Door Name", ""),
                 "Event": row.get("Message Type", ""),
-                "Badge": "",
                 "Name": row.get("Name", ""),
                 "Location": "Miluwakee",
-                "Comments": row.get("Message Text", ""),
+                "Badge": row.get("Message Text", ""),
             })
 
         return pd.DataFrame(out_rows)
