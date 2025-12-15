@@ -30,7 +30,7 @@ class MilwaukeeTransform(Transform):
         return found == self.normalized_expected
 
 
-    def is_end_of_chunk_data(self, row):
+    def is_end_of_chunk(self, row):
         compacted_row = Utils.compact_row(row)
 
         if not compacted_row:
@@ -45,33 +45,6 @@ class MilwaukeeTransform(Transform):
             return True
 
         return False
-
-    def split_into_chunks(self, df):
-        chunks = []
-        current_chunk = []
-        chunk_started = False
-
-        for _, row in df.iterrows():
-
-            if self.is_start_of_chunk(row):
-                if current_chunk:
-                    chunks.append(current_chunk)
-                    current_chunk = []
-                chunk_started = True
-                continue  # header row is control, not data
-
-            if chunk_started:
-                if self.is_end_of_chunk_data(row):
-                    chunks.append(current_chunk)
-                    current_chunk = []
-                    chunk_started = False
-                else:
-                    current_chunk.append(row.tolist())
-
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        return chunks
 
     def find_datetime_idx(self, chunk_rows): 
         # right most (visually) cell
