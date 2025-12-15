@@ -1,292 +1,173 @@
+import argparse
+import os
 import re
-import pandas as pd
-import numpy as np
-from datetime import datetime
+import sys
+from typing import List, Type
 
-EXPECTED_FIELDS = [
-    "Name",
-    "Door Name",
-    "Message Type",
-    "Message Text",
-    "Message Date/Time",
-]
+from milwaukee_transform import MilwaukeeTransform
+from moselgk_transform import MoselGKTransform
+from ms_transform import MSTransform
+from transform import Transform
 
-##### UTIL #####
 
-def is_cell_empty(cell): 
-    return pd.isna(cell) or str(cell).strip() == ""
+# =========================
+# Colorized Logger
+# =========================
+class Log:
+    RESET = "\033[0m"
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    BOLD = "\033[1m"
 
-def is_row_empty(row):
-    return all(pd.isna(cell) or str(cell).strip() == "" for cell in row)
+    @classmethod
+    def info(cls, msg: str):
+        print(f"{cls.BLUE}[INFO]{cls.RESET} {msg}")
 
-def compact_row(row):
-    """Remove empty cells, preserve order"""
-    return [str(cell).strip() for cell in row if not pd.isna(cell) and str(cell).strip() != ""]
+    @classmethod
+    def success(cls, msg: str):
+        print(f"{cls.GREEN}[SUCCESS]{cls.RESET} {msg}")
 
-def looks_like_datetime(value):
-    DATE_REGEXES = [
-        # 7/3/2025 9:40:01 AM
-        r"\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(AM|PM)",
-        # 07-09-2025
-        r"\d{1,2}-\d{1,2}-\d{4}",
-        # 2025-07-09
-        r"\d{4}-\d{1,2}-\d{1,2}",
-        # 7/3/2025
-        r"\d{1,2}/\d{1,2}/\d{4}",
-    ]
+    @classmethod
+    def warn(cls, msg: str):
+        print(f"{cls.YELLOW}[WARN]{cls.RESET} {msg}")
 
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return False
+    @classmethod
+    def error(cls, msg: str):
+        print(f"{cls.RED}[ERROR]{cls.RESET} {msg}")
 
-    # Excel serial date
-    if isinstance(value, (int, float)):
-        return 20000 < value < 60000  # sane Excel date range
 
-    s = str(value).strip()
+# =========================
+# Main Application
+# =========================
+class ExcelSchemaConverterApp:
+    SUPPORTED_SCHEMAS = {"Milwaukee", "MoselGK", "MS"}
 
-    if not s:
-        return False
+    SCHEMA_TO_TRANSFORMER: dict[str, Type[Transform]] = {
+        "milwaukee": MilwaukeeTransform,
+        "moselgk": MoselGKTransform,
+        "ms": MSTransform,
+    }
 
-    # Regex-based fast path
-    for rx in DATE_REGEXES:
-        if re.fullmatch(rx, s, re.IGNORECASE):
-            return True
+    def __init__(self):
+        self.args = self._parse_args()
 
-    # Pandas fallback (strict-ish)
-    try:
-        pd.to_datetime(s, errors="raise")
-        return True
-    except Exception:
-        return False
-
-def load_excel_raw(path, sheet_name=0):
-    df = pd.read_excel(path, sheet_name=sheet_name, header=None)
-    # Drop completely empty columns
-    df = df.dropna(axis=1, how="all")
-    return df
-
-##### PROCESSING PIPELINE #####
-
-def split_into_chunks(df):
-
-    def is_end_of_chunk_data(row):
-        compacted_row = compact_row(row)
-
-        if not compacted_row:
-            return False
-
-        first = compacted_row[0]
-
-        if looks_like_datetime(first):
-            return True
-
-        if isinstance(first, str) and "relko" in first.strip().lower():
-            return True
-
-        return False
-
-    def normalize(s):
-        return (
-            s.lower()
-            .replace(" ", "")
-            .replace("/", "")
-            .replace(":", "")
-            .strip()
+    # ---------------- CLI ----------------
+    def _parse_args(self):
+        parser = argparse.ArgumentParser(
+            description="Convert dirty access-control Excel reports into a normalized schema"
         )
 
-    # normalized *view* of EXPECTED_FIELDS (EXPECTED_FIELDS itself untouched)
-    normalized_expected = {normalize(f) for f in EXPECTED_FIELDS}
+        parser.add_argument(
+            "--batch",
+            help="Regex to match multiple Excel files in current directory",
+        )
 
-    def is_start_of_chunk(row):
-        found = set()
+        parser.add_argument(
+            "--input",
+            help="Single input Excel file (ignored if --batch is provided)",
+        )
 
-        for cell in compact_row(row):
-            key = normalize(cell)
-            if key in normalized_expected:
-                found.add(key)
+        parser.add_argument(
+            "--output",
+            help="Output Excel file (only valid for single input mode)",
+        )
 
-        return found == normalized_expected
+        parser.add_argument(
+            "--schema",
+            choices=self.SUPPORTED_SCHEMAS,
+            help="Input schema. If omitted, inferred from filename.",
+        )
 
-    chunks = []
-    current_chunk = []
-    chunk_started = False
+        return parser.parse_args()
 
-    for _, row in df.iterrows():
+    # ---------------- orchestration ----------------
+    def run(self):
+        try:
+            files = self._resolve_input_files()
+        except Exception as e:
+            Log.error(str(e))
+            sys.exit(1)
 
-        if is_start_of_chunk(row):
-            if current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = []
-            chunk_started = True
-            continue  # header row is control, not data
+        Log.info(f"Found {len(files)} file(s) to process")
 
-        if chunk_started:
-            if is_end_of_chunk_data(row):
-                chunks.append(current_chunk)
-                current_chunk = []
-                chunk_started = False
+        for input_file in files:
+            try:
+                schema = self._resolve_schema(input_file)
+                output_file = self._resolve_output_file(input_file)
+
+                Log.info(f"Processing file: {input_file}")
+                Log.info(f"Schema detected: {schema}")
+                Log.info(f"Output file: {output_file}")
+
+                self._process_single_file(input_file, output_file, schema)
+                Log.success(f"Completed: {output_file}")
+
+            except Exception as e:
+                Log.error(f"Failed processing {input_file}: {e.with_traceback()}")
+
+    # ---------------- helpers ----------------
+    def _resolve_input_files(self) -> List[str]:
+        if self.args.batch:
+            pattern = re.compile(self.args.batch)
+            files = [
+                f for f in os.listdir(".")
+                if pattern.search(f) and f.lower().endswith((".xls", ".xlsx"))
+            ]
+
+            if not files:
+                raise ValueError("Batch regex matched no Excel files")
+
+            return files
+
+        if not self.args.input:
+            raise ValueError("Either --input or --batch must be provided")
+
+        if not os.path.exists(self.args.input):
+            raise FileNotFoundError(f"Input file not found: {self.args.input}")
+
+        return [self.args.input]
+
+    def _resolve_schema(self, input_file: str) -> str:
+        if self.args.schema:
+            return self.args.schema
+
+        fname = input_file.lower()
+        for schema in self.SUPPORTED_SCHEMAS:
+            if schema.lower() in fname:
+                Log.warn(f"Inferred schema '{schema}' from filename")
+                return schema
+
+        raise ValueError(
+            f"Could not infer schema from filename: {input_file}. "
+            f"Please specify --schema."
+        )
+
+    def _resolve_output_file(self, input_file: str) -> str:
+        if self.args.output:
+            if self.args.batch:
+                Log.warn("--output ignored in batch mode")
             else:
-                current_chunk.append(row.tolist())
+                if self.args.output.endswith("xls"):
+                    Log.warn("--output has invalid format: 'xls'. Converting to 'xlsx'")
+                    self.args.output += 'x'
+                return self.args.output
 
-    if current_chunk:
-        chunks.append(current_chunk)
+        base, _ = os.path.splitext(input_file)
+        return f"{base}_Converted.xlsx"
 
-    return chunks
+    # ---------------- core pipeline call ----------------
+    def _process_single_file(self, input_file: str, output_file: str, schema: str):
+        transformer_cls = self.SCHEMA_TO_TRANSFORMER.get(schema.lower())
+        if not transformer_cls:
+            raise ValueError(f"Unsupported schema: {schema}")
 
+        transformer = transformer_cls(input_file, output_file)
 
-# def process_chunk(chunk_rows):
-#     """
-#     Convert one chunk into normalized rows
-#     """
-
-#     def extract_out_name_data(chunk_rows):
-#         left_most_non_empty_cell = len(chunk_rows[0])
-
-#         for row in chunk_rows:
-#             for idx, cell in enumerate(row):
-#                 if not is_cell_empty(cell):
-#                     left_most_non_empty_cell = min(left_most_non_empty_cell, idx)
-#                     break
-
-#         parts = []
-#         for row in chunk_rows:
-#             if left_most_non_empty_cell < len(row):
-#                 cell = row[left_most_non_empty_cell]
-#                 if not is_cell_empty(cell):
-#                     parts.append(str(cell).strip())
-
-#         # remove the column which has the name from all rows
-#         for i, row in enumerate(chunk_rows):
-#             if left_most_non_empty_cell < len(row):
-#                 chunk_rows[i] = row[:left_most_non_empty_cell ] + row[left_most_non_empty_cell + 1:]
-#         return " ".join(parts)
-
-#     name = extract_out_name_data(chunk_rows)
-
-#     for i, row in enumerate(chunk_rows):
-#         row = compact_row(row)
-#         chunk_rows[i] = [name] + row
-
-#     # iterate over the rows again and concatenate all the contents in a column BETWEEN TWO DATE/TIME cols (some will be empty)
-#     # use the is_cell_empty(cell) function to check
-
-#     return chunk_rows
-def process_chunk(chunk_rows):
-    """
-    Convert one chunk into normalized rows
-    """
-
-    def extract_out_name_data(chunk_rows):
-        left_most_non_empty_cell = len(chunk_rows[0])
-
-        for row in chunk_rows:
-            for idx, cell in enumerate(row):
-                if not is_cell_empty(cell):
-                    left_most_non_empty_cell = min(left_most_non_empty_cell, idx)
-                    break
-
-        parts = []
-        for row in chunk_rows:
-            if left_most_non_empty_cell < len(row):
-                cell = row[left_most_non_empty_cell]
-                if not is_cell_empty(cell):
-                    parts.append(str(cell).strip())
-
-        for i, row in enumerate(chunk_rows):
-            if left_most_non_empty_cell < len(row):
-                chunk_rows[i] = (
-                    row[:left_most_non_empty_cell] +
-                    row[left_most_non_empty_cell + 1:]
-                )
-
-        return " ".join(parts)
-    
-    def concatenate_related_rows(chunk_rows):
-        results = []
-        current = None
-
-        DATE_COL_IDX = EXPECTED_FIELDS.index("Message Date/Time")
-
-        for row in chunk_rows:
-            if DATE_COL_IDX >= len(row):
-                continue
-
-            dt_cell = row[DATE_COL_IDX]
-
-            # start of a new logical row
-            if not is_cell_empty(dt_cell):
-                if current:
-                    results.append(current)
-                    current = row
-                    continue
-                else: 
-                    current = row
-
-            for idx, field in enumerate(EXPECTED_FIELDS):
-                if field in("Name, Message Date/Time"):
-                    continue
-                
-                field = EXPECTED_FIELDS.index(field)
-                cell = row[idx]
-                if not is_cell_empty(cell):
-                    current[field] += (
-                        " " + str(cell).strip()
-                        if current[field]
-                        else str(cell).strip()
-                    )
-
-        if current:
-            results.append(current)
-
-        return results
-
-    # ---- name extraction ----
-    name = extract_out_name_data(chunk_rows)
-
-    # prepend name and compact
-    for i, row in enumerate(chunk_rows):
-        row = compact_row(row)
-        chunk_rows[i] = [name] + row
-    
-    return concatenate_related_rows(chunk_rows)
+        Log.info(f"Running transformer: {transformer_cls.__name__}")
+        transformer.main()
 
 
-def convert_schema(df):
-    """
-    df: pandas DataFrame with columns:
-        Name, Door Name, Message Type, Message Text, Message Date/Time
-    """
-
-    out_rows = []
-
-    for _, row in df.iterrows():
-        dt = pd.to_datetime(row["Message Date/Time"], errors="coerce")
-
-        out_rows.append({
-            "Date": dt.strftime("%Y-%m-%d") if not pd.isna(dt) else "",
-            "Time": dt.strftime("%H:%M:%S") if not pd.isna(dt) else "",
-            "Device": row.get("Door Name", ""),
-            "Event": row.get("Message Type", ""),
-            "Badge": "",
-            "Name": row.get("Name", ""),
-            "Location": "Miluwakee",
-            "Comments": row.get("Message Text", ""),
-        })
-
-    return pd.DataFrame(out_rows)
-
-
-def main(path = "Relko Door Report July GD - Milwaukee.xls", output_path = "output.xlsx"):
-    df = load_excel_raw(path)
-    chunks = split_into_chunks(df)
-
-    all_rows = []
-    for chunk in chunks:
-        all_rows.extend(process_chunk(chunk))
-
-    normalized_df = pd.DataFrame(all_rows, columns=EXPECTED_FIELDS)
-    final_output = convert_schema(normalized_df)
-    final_output.to_excel(output_path, index=False)
-    return normalized_df
-
-main()
+if __name__ == "__main__": 
+    ExcelSchemaConverterApp().run()
