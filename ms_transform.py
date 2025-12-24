@@ -106,7 +106,7 @@ class MSTransform(Transform):
                 continue
 
             rows.append([
-                dt.date().isoformat(),
+                dt.strftime("%d-%m-%Y"),
                 dt.time().strftime("%H:%M:%S"),
                 row[1],   # Device
                 row[2],   # Event

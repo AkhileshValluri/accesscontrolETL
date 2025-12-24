@@ -51,10 +51,32 @@ def looks_like_datetime(value):
         return False
 
 def load_excel_raw(path, sheet_name=0):
-    df = pd.read_excel(path, sheet_name=sheet_name, header=None)
-    # Drop completely empty columns
-    df = df.dropna(axis=1, how="all")
-    return df
+    # -------- Single sheet (old behavior) --------
+    if sheet_name not in (None, "all"):
+        df = pd.read_excel(path, sheet_name=sheet_name, header=None)
+        return df.dropna(axis=1, how="all")
+
+    # -------- All sheets --------
+    sheets = pd.read_excel(path, sheet_name=None, header=None)
+
+    frames = []
+    for sheet_name, df in sheets.items():
+        if df.empty:
+            continue
+
+        # Drop fully empty columns per sheet
+        df = df.dropna(axis=1, how="all")
+
+        # Optional: keep sheet name for debugging (comment out if unwanted)
+        # df.insert(0, "__sheet__", sheet_name)
+
+        frames.append(df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    # Concatenate vertically, preserve order
+    return pd.concat(frames, ignore_index=True)
 
 def normalize(s):
     return (

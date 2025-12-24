@@ -54,7 +54,7 @@ class Transform:
             
 
     def main(self) :
-        df = load_excel_raw(self.input_file)
+        df = load_excel_raw(self.input_file, sheet_name=None)
         chunks = self.split_into_chunks(df)
 
         all_rows = []
