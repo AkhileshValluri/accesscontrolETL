@@ -12,8 +12,12 @@ from utils import (
 class MSTransform(Transform):
 
     LOCATION = "MS"
-    chunk_metadata = []
-    chunk_metadata_idx = 0
+
+    def __init__(self, input_file, output_file):
+        super().__init__(input_file, output_file)
+        self.chunk_metadata = []
+        self.chunk_metadata_idx = 0
+
 
     @property
     def EXPECTED_FIELDS(self):
