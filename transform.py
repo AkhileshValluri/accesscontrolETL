@@ -1,6 +1,8 @@
 from utils import * 
 
 class Transform:
+    chunk_start_contains_data = False
+
     def __init__(self, input_file, output_file):
         self.input_file = input_file
         self.output_file = output_file
@@ -36,7 +38,11 @@ class Transform:
                     chunks.append(current_chunk)
                     current_chunk = []
                 chunk_started = True
-                continue  # header row is control, not data
+
+                if self.chunk_start_contains_data:
+                    current_chunk.append(row.tolist())
+
+                continue
 
             if chunk_started:
                 if self.is_end_of_chunk(row, _, df):

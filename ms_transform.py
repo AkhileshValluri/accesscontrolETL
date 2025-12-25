@@ -15,6 +15,7 @@ class MSTransform(Transform):
 
     def __init__(self, input_file, output_file):
         super().__init__(input_file, output_file)
+        self.chunk_start_contains_data = True
         self.chunk_metadata = []
         self.chunk_metadata_idx = 0
 
